@@ -1,0 +1,141 @@
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Document</title>
+  </head>
+
+  <body>
+    <button id="delete">Delete From Imgur</button>
+    <div id="rate-limits"></div>
+    <div id="response"></div>
+
+    <script>
+      let response = document.querySelector("#response");
+      let rateLimits = document.querySelector("#rate-limits");
+      let successes = [];
+      let errors = [];
+
+      function deleteImage(config, history, index = -1, requestsLeft = 1) {
+        let remaining = history.reduce((remaining, item) => {
+          if (
+            ("DeletionURL" in item && "Deleted" in item == false) ||
+            item.Deleted == false
+          ) {
+            return remaining + 1;
+          } else {
+            return remaining;
+          }
+        }, 0);
+
+        fetch("history-deleter.php", {
+          method: "put",
+          body: JSON.stringify({
+            history: history,
+          }),
+        }).then(() => {
+          if (remaining <= 0) {
+            response.innerHTML = `No images to delete.`;
+          } else {
+            response.innerHTML = `Attempting to delete ${remaining} images... <br/>Successes: ${successes.length} <br /> Errors: ${errors.length}`;
+            setTimeout(() => {
+              index++;
+              // While this index should be skipped
+              while (
+                index < history.length &&
+                ("DeletionURL" in history[index] == false ||
+                  ("Deleted" in history[index] &&
+                    history[index].Deleted == true))
+              ) {
+                index++;
+              }
+
+              if (index < history.length && requestsLeft > 0) {
+                let deleteUrl = new URL(history[index].DeletionURL);
+                let deleteHash = deleteUrl.pathname.split("/")[
+                  deleteUrl.pathname.split("/").length - 1
+                ];
+                fetch(`https://api.imgur.com/3/image/${deleteHash}`, {
+                  method: "DELETE",
+                  headers: {
+                    Authorization: `Client-ID ${config.ImgurOAuth2Info.Client_ID}`,
+                  },
+                })
+                  .then((response) => {
+                    if (response.headers.has("x-ratelimit-userremaining")) {
+                      requestsLeft = response.headers.get(
+                        "x-ratelimit-userremaining"
+                      );
+
+                      rateLimits.innerHTML = `
+                      API Requests remaining: ${requestsLeft}<br/>
+                      Time until reset: ${Math.round(
+                        (response.headers.get("x-ratelimit-userreset") -
+                          Math.round(Date.now() / 1000)) /
+                          60
+                      )} minutes
+                    `;
+                    }
+
+                    return response.json();
+                  })
+                  .then((data) => {
+                    if (data.status != 200) {
+                      errors.push(data);
+                    } else {
+                      successes.push(data);
+                      history[index].Deleted = true;
+                    }
+
+                    deleteImage(config, history, index, requestsLeft);
+                  })
+                  .catch((error) => {
+                    deleteImage(config, history, index, requestsLeft);
+
+                    console.error(error);
+                  });
+              } else {
+                response.innerHTML = "Complete...";
+
+                if (requestsLeft <= 0) {
+                  response.innerHTML +=
+                    "<br/>Out of API requests, continue later.";
+                }
+                if (successes.length > 0) {
+                  response.innerHTML = `<br/>${successes.length} images deleted.`;
+                  console.log("Successes: ", successes);
+                }
+                if (errors.length > 0) {
+                  response.innerHTML = `<br/>${errors.length} images could not be deleted.`;
+                  console.log("Errors: ", errors);
+                }
+              }
+            }, 200);
+          }
+        });
+      }
+
+      document.querySelector("#delete").onclick = () => {
+        fetch("../History.json", {})
+          .then((response) => {
+            // NOTE: History.json is invalid JSON (missing [] around the list)
+            return response.text();
+          })
+          .then((fileContents) => {
+            let history = JSON.parse(`[${fileContents}]`);
+
+            fetch("../UploadersConfig.json", {})
+              .then((response) => {
+                return response.json();
+              })
+              .then((config) => {
+                deleteImage(config, history, -1);
+              });
+          })
+          .catch((error) => {
+            console.error("OUTER FETCH ERROR.");
+          });
+      };
+    </script>
+  </body>
+</html>
